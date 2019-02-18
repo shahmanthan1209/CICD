@@ -1,0 +1,57 @@
+Jenkins Job Description:
+
+Job: Create_node
+
+	Build->Execute Shell
+		cd /home/ubuntu/chef-repo
+		knife ec2 server create -I ami-66506c1c -r "recipe[updaterepo]","role[tomcat-server]","recipe[s3cmd]"  -f t2.micro -S <KEY-NAME> -i <KEY-PATH> --ssh-user ubuntu --region us-east-1 -Z us-east-1a -g <SECURITY-GROUP-ID>
+#This will create node on AWS EC2 and installs Java8,tomcat8 and s3cli as I have configured it on role tomcat-server. You need to configure AWS keys in cookbook attributes. 
+-----------------------------------------------------------------------------------------
+Job: Build
+	Description: Builds war and put it on S3 bucket
+	Source code management :https://github.com/ganatradeval/maven-project.git
+	#Git repository to our test project 
+	Build Triggers:
+		Poll SCM : * * * * * 	
+	#check every minute on git for any changes commit
+	Build:
+		Invoke top level maven : Goal-clean package
+	#compiles and generate .war from given code
+	Post buils action:
+		publish artifacts to s3 bucket
+			select s3 profile
+			source **/*.war
+			Dest bucket: <Your bucket name/and path if any>
+			Storage class and region <according to bucket>		
+			manage artifacts
+		#It requires plugin "S3 publisher plugin" 
+		#Refer: https://vnextcoder.wordpress.com/2016/10/25/part-3-storing-jenkins-output-to-aws-s3-bucket/
+		
+		Trigger parameterized build on other projects:
+			Projects to build: Deploy to Server
+			Predefined parameter DEVBUILD=$BUILD_NUMBER
+		#To pass parameter BUILD_NUMBER to other job. we need it in s3 url to access published war file
+------------------------------------------------------------------------------------------
+Job: Deploy to Server
+	This project is parameterized
+		Name:DEVBUILD
+	#Takes DEVBUILD as build number of Job "Build" passed by that job
+	Build
+		Execute shell:
+			cd /var/lib/jenkins
+			knife ssh "role:tomcat-server" "sudo chef-client" -a ec2.public_hostname -i <KEY-PATH> -x ubuntu
+			knife ssh "role:tomcat-server" "sudo rm -rf <tomcat_installation_path>/webapps/webapp.war" -a ec2.public_hostname -i <KEY-PATH> -x ubuntu
+			knife ssh "role:tomcat-server" "sudo s3cmd get --region=ap-south-1 s3://<Bucket_name/path>/jobs/Build/$DEVBUILD/webapp/target/webapp.war <tomcat_installation_path>/webapps/" -a ec2.public_hostname -i <KEY-PATH> -x ubuntu
+	#We have ubuntu user of ec2 instance as it is Ubuntu16.04
+	#These command will automatically find nodes which has tomcat-server role and run query given in these commands
+	#We have also copied .chef to /var/lib/jenkins which is home dir of user Jenkins so that it would be easy to run knife commands.
+------------------------------------------------------------------------------------------
+Job: CheckStyle
+	Source code management :https://github.com/ganatradeval/maven-project.git 
+	Build triggers:
+		build after other projects are built
+			projects to watch: Build
+	Build:
+		Invoke top-level maven: Goals: checkstyle:checkstyle
+	#It will generate checkstyle from maven. Gives graph to analyse builds.
+
